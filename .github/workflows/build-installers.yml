@@ -1,0 +1,134 @@
+name: Build WorkBOT Windows & Linux Installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/commit in private source repo (defaults to master)"
+        required: false
+        default: "master"
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: "--max-old-space-size=6144"
+
+jobs:
+  package-windows:
+    name: Windows x64 (.exe + .zip)
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout private source into ephemeral build dir
+        uses: actions/checkout@v4
+        with:
+          repository: nguyenduchoai/workbot
+          ref: ${{ inputs.ref || 'master' }}
+          ssh-key: ${{ secrets.WORKBOT_SOURCE_SSH_KEY }}
+          path: _src
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: _src/mausbot/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: _src/mausbot
+        run: pnpm install --frozen-lockfile
+      - name: Clean & Package Windows NSIS (.exe) + Portable (.zip)
+        working-directory: _src/mausbot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist dist-server release
+          pnpm package:win
+          exe_file=$(ls release/WorkBOT-*-setup.exe | head -n 1)
+          cp "$exe_file" release/Workbot-Windows-x64.exe
+          ls -lh release/
+      - name: Publish Windows installers to GitHub Release
+        working-directory: _src/mausbot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./package.json').version")
+          tag="v${ver}"
+          gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GH_REPO" --title "WorkBOT Desktop $tag" --notes "Official WorkBOT Desktop installers — https://workbot.vn" || sleep 3
+          gh release upload "$tag" \
+            release/Workbot-Windows-x64.exe \
+            release/WorkBOT-*-setup.exe \
+            release/WorkBOT-*-x64.zip \
+            release/latest.yml \
+            --repo "$GH_REPO" --clobber
+      - name: Wipe ephemeral source
+        if: always()
+        shell: bash
+        run: rm -rf _src
+
+  package-linux:
+    name: Linux Ubuntu x64 (.AppImage + .deb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout private source into ephemeral build dir
+        uses: actions/checkout@v4
+        with:
+          repository: nguyenduchoai/workbot
+          ref: ${{ inputs.ref || 'master' }}
+          ssh-key: ${{ secrets.WORKBOT_SOURCE_SSH_KEY }}
+          path: _src
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: _src/mausbot/pnpm-lock.yaml
+      - name: Install Linux packaging tools
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils squashfs-tools rpm
+      - name: Install dependencies
+        working-directory: _src/mausbot
+        run: pnpm install --frozen-lockfile
+      - name: Clean & Package Linux (.AppImage + .deb)
+        working-directory: _src/mausbot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist dist-server release
+          pnpm package:linux
+          appimg=$(ls release/WorkBOT-*.AppImage | head -n 1)
+          debfile=$(ls release/WorkBOT-*.deb | head -n 1)
+          cp "$appimg" release/Workbot-Linux-x64.AppImage
+          cp "$debfile" release/Workbot-Linux-amd64.deb
+          chmod +x release/Workbot-Linux-x64.AppImage
+          ls -lh release/
+      - name: Publish Linux installers to GitHub Release
+        working-directory: _src/mausbot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./package.json').version")
+          tag="v${ver}"
+          gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GH_REPO" --title "WorkBOT Desktop $tag" --notes "Official WorkBOT Desktop installers — https://workbot.vn" || sleep 3
+          gh release upload "$tag" \
+            release/Workbot-Linux-x64.AppImage \
+            release/Workbot-Linux-amd64.deb \
+            release/WorkBOT-*.AppImage \
+            release/WorkBOT-*.deb \
+            --repo "$GH_REPO" --clobber
+      - name: Wipe ephemeral source
+        if: always()
+        shell: bash
+        run: rm -rf _src
