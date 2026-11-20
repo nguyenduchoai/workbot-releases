@@ -61,11 +61,14 @@ jobs:
           tag="v${ver}"
           gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1 || \
             gh release create "$tag" --repo "$GH_REPO" --title "WorkBOT Desktop $tag" --notes "Official WorkBOT Desktop installers — https://workbot.vn" || sleep 3
+          shopt -s nullglob
+          blockmaps=(release/*.blockmap)
           gh release upload "$tag" \
             release/Workbot-Windows-x64.exe \
             release/WorkBOT-*-setup.exe \
             release/WorkBOT-*-x64.zip \
             release/latest.yml \
+            "${blockmaps[@]}" \
             --repo "$GH_REPO" --clobber
       - name: Wipe ephemeral source
         if: always()
@@ -122,11 +125,16 @@ jobs:
           tag="v${ver}"
           gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1 || \
             gh release create "$tag" --repo "$GH_REPO" --title "WorkBOT Desktop $tag" --notes "Official WorkBOT Desktop installers — https://workbot.vn" || sleep 3
+          shopt -s nullglob
+          extra=()
+          [ -f release/latest-linux.yml ] && extra+=(release/latest-linux.yml)
+          for bm in release/*.blockmap; do extra+=("$bm"); done
           gh release upload "$tag" \
             release/Workbot-Linux-x64.AppImage \
             release/Workbot-Linux-amd64.deb \
             release/WorkBOT-*.AppImage \
             release/WorkBOT-*.deb \
+            "${extra[@]}" \
             --repo "$GH_REPO" --clobber
       - name: Wipe ephemeral source
         if: always()
