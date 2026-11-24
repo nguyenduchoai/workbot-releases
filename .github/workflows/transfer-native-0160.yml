@@ -1,0 +1,113 @@
+name: Verify and transfer WorkBOT 0.1.160 native installers
+on:
+  push:
+    branches: [codex/transfer-native-0160]
+permissions:
+  contents: write
+jobs:
+  transfer:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: linux
+            runner: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GROUP: ${{ matrix.platform }}
+      GH_REPO: nguyenduchoai/workbot-releases
+    steps:
+      - name: Fetch and verify the selected installers
+        env:
+          ASSETS: ${{ secrets.WB_NATIVE_INSTALLERS_0160 }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          def digest_file(f):
+              h=hashlib.sha256()
+              for block in iter(lambda:f.read(1<<20),b""):
+                  h.update(block)
+              return h.hexdigest()
+          rows=json.loads(os.environ["ASSETS"])[os.environ["GROUP"]]
+          if len(rows) != 2:
+              raise SystemExit("Incomplete platform asset set")
+          for row in rows:
+              name=row["name"]
+              if not re.fullmatch(r"WorkBOT-0\.1\.160-[A-Za-z0-9_.-]+",name):
+                  raise SystemExit("Invalid asset filename")
+              if not row["url"].startswith("https://release-assets.githubusercontent.com/"):
+                  raise SystemExit("Invalid download host")
+              p=pathlib.Path(name)
+              result=subprocess.run(["curl","--silent","--fail","--location","--retry","3","-o",str(p),row["url"]])
+              if result.returncode:
+                  raise SystemExit("Download failed")
+              with p.open("rb") as f:
+                  d="sha256:"+digest_file(f)
+              if d != row["digest"] or p.stat().st_size != row["size"]:
+                  raise SystemExit("Digest or size mismatch")
+              print(name,d,flush=True)
+          PY
+      - name: Verify clean first launch of packaged server
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GROUP" == "windows" ]]; then
+            7z x -y -ounpacked WorkBOT-0.1.160-*.zip > /dev/null
+          else
+            dpkg-deb -x WorkBOT-0.1.160-*.deb unpacked
+          fi
+          python - <<'PYCODE'
+          import json, os, pathlib, socket, subprocess, tempfile, time, urllib.request
+          from urllib.error import URLError
+          root=pathlib.Path("unpacked").resolve()
+          server,=root.rglob("resources/server/index.js")
+          res=server.parent.parent
+          win=os.name=="nt"
+          exe=res.parent/("WorkBOT.exe" if win else "workbot")
+          assert exe.is_file(),exe
+          home=pathlib.Path(tempfile.mkdtemp())
+          with socket.socket() as s:
+              s.bind(("127.0.0.1",0))
+              port=s.getsockname()[1]
+          env={k:v for k,v in os.environ.items() if k.upper() in {"PATH","SYSTEMROOT","TEMP","TMP","WINDIR","LANG"}}
+          env.update(HOME=str(home),USERPROFILE=str(home),APPDATA=str(home/"appdata"),LOCALAPPDATA=str(home/"local"),
+              ELECTRON_RUN_AS_NODE="1",OMB_DATA_DIR=str(home),OMB_PORT=str(port),OMB_WEBHOOK_PORT="0",WORKBOT_LAN_PORT="0",WORKBOT_UDP_PORT="0",
+              OMB_STATIC_DIR=str(res/"ui"))
+          p=subprocess.Popen([str(exe),str(server)],env=env,cwd=home)
+          def api(path):
+              with urllib.request.urlopen("http://127.0.0.1:"+str(port)+path,timeout=20) as r:
+                  return json.load(r)
+          try:
+              for attempt in range(90):
+                  if p.poll() is not None:
+                      raise RuntimeError("Packaged server exited unexpectedly: "+str(p.returncode))
+                  try:
+                      api("/api/health")
+                      break
+                  except (URLError,TimeoutError):
+                      time.sleep(1)
+              assert api("/.well-known/openmausbot/environment")["version"]=="0.1.160"
+              initial=api("/api/workbot/overview?kb_id=main")
+              for k in ("accounts","contacts","report_groups","group_bridges","recent_messages"):
+                  assert initial["zalo_git_orchestrator"][k]==[],k
+              for k in ("notes","tables","sources"):
+                  assert initial["okdb"][k]==[],k
+              assert api("/api/workbot/zalo-git/priority-reports")["reports"]==[]
+              print("Verified native packaged server 0.1.160 with empty profile.")
+          finally:
+              p.kill()
+              p.wait(20)
+          PYCODE
+      - name: Upload to checked draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/nguyenduchoai/workbot-releases/releases/456913603 --jq '.draft')" = true
+          test "$(gh api repos/nguyenduchoai/workbot-releases/releases/456913603 --jq '.tag_name')" = v0.1.160
+          gh release upload v0.1.160 WorkBOT-0.1.160-*
