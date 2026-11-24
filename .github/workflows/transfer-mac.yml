@@ -1,0 +1,44 @@
+name: Verify macOS release files
+on:
+  push:
+    branches: [codex/transfer-mac-0160]
+permissions:
+  contents: write
+jobs:
+  mac-download:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            sha: cb06167129225debc7b277939b7344ffbebf4841c61f1dfe8106479c84db86c3
+          - arch: x64
+            sha: ed7acfe95c895464a375ee34de9ed705c02c49715d80b4cf45d0a2f0be1e9c12
+    steps:
+      - name: Download and verify installer
+        env:
+          ARCH: ${{ matrix.arch }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          set -euo pipefail
+          file="WorkBOT-0.1.160-$ARCH.dmg"
+          curl --proto '=https' --proto-redir '=https' -fLsS --retry 2 --max-time 850 -o "$file" "https://workbot.vn/downloads/$file"
+          printf '%s  %s\n' "$SHA" "$file" | sha256sum -c -
+      - name: Attach verified file to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          set -euo pipefail
+          file="WorkBOT-0.1.160-$ARCH.dmg"
+          release=$(gh release view v0.1.160 -R "$GITHUB_REPOSITORY" --json databaseId,isDraft,assets)
+          jq -e '.databaseId==456913603 and .isDraft' <<< "$release"
+          digest=$(jq -r --arg f "$file" '.assets[]|select(.name==$f)|.digest' <<< "$release")
+          if [[ -z "$digest" ]]; then
+            gh release upload v0.1.160 "$file" -R "$GITHUB_REPOSITORY"
+          else
+            test "$digest" = "sha256:$SHA"
+          fi
